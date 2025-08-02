@@ -1,193 +1,143 @@
 import streamlit as st
+import os
 from langchain_openai import ChatOpenAI
 from langchain.prompts.chat import ChatPromptTemplate
-from langchain_core.prompts import ChatMessagePromptTemplate,MessagesPlaceholder
+from langchain_core.prompts import MessagesPlaceholder
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from utils import StreamHandler
-import os
 
+# ---------------------- 설정 ----------------------
+st.set_page_config(page_title="운동화 쇼핑 에이전트")
+st.title("운동화 쇼핑 에이전트")
 
+os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
 
-st.set_page_config(page_title="쇼핑에이전트")
-st.title("쇼핑에이전트")
-
-
-#API KEY 설정
-os.environ["OPENAI_API_KEY"]=st.secrets["OPENAI_API_KEY"]
-
+# ---------------------- 상태 초기화 ----------------------
 if "messages" not in st.session_state:
-    st.session_state["messages"]=[]
+    st.session_state["messages"] = []
+if "store" not in st.session_state:
+    st.session_state["store"] = dict()
+if "selected_question" not in st.session_state:
+    st.session_state["selected_question"] = None
+if "followup_step" not in st.session_state:
+    st.session_state["followup_step"] = 0
 
-#채팅 대화 기록을 저장하는 store
-if "store" not in  st.session_state:
-    st.session_state["store"]=dict()
+# ---------------------- 후속질문 ----------------------
+followup_set_1 = {
+    "Q1": "출퇴근용으로 신기 좋은 운동화는 어떤 게 있나요?",
+    "Q2": "러닝할 때 발에 부담을 줄여주는 운동화가 있을까요?",
+    "Q3": "여행할 때 신기 좋은 운동화는 무엇인가요?"
+}
+followup_set_2 = {
+    "Q4": "하루 종일 신었더니 발이 아팠던 경험이 있는데, 그럴 때 어떤 운동화를 신어야 하나요?",
+    "Q5": "편한 느낌을 주는 운동화가 무엇이 있을까요?",
+    "Q6": "어떤 운동화를 신어야 만족스러운 경험을 할 수 있을까요?"
+}
 
+# ---------------------- 대화 히스토리 ----------------------
+def get_session_history(session_id: str) -> BaseChatMessageHistory:
+    if session_id not in st.session_state["store"]:
+        st.session_state["store"][session_id] = ChatMessageHistory()
+    return st.session_state["store"][session_id]
 
+# ---------------------- 이전 메시지 출력 ----------------------
+for role, message in st.session_state["messages"]:
+    st.chat_message(role).write(message)
 
-#이전 대화 기록을 출력해주는 코드  
-if "messages" in st.session_state and len(st.session_state["messages"]) > 0:
-    for role,message in st.session_state["messages"]:
-        st.chat_message(role).write(message)
+# ---------------------- 입력 ----------------------
+user_input = None
+if st.session_state["selected_question"]:
+    user_input = st.session_state["selected_question"]
+    st.session_state["selected_question"] = None
+elif tmp := st.chat_input("메시지를 입력해 주세요"):
+    user_input = tmp
 
+# ---------------------- 응답 처리 ----------------------
+if user_input:
+    st.chat_message("user").write(user_input)
+    st.session_state["messages"].append(("user", user_input))
 
-
-# 세션 ID를 기반으로 세션 기록을 가져오는 함수
-def get_session_history(session_ids: str) -> BaseChatMessageHistory:
-    if session_ids not in st.session_state["store"]:  # 세션 ID가 store에 없는 경우
-        # 새로운 ChatMessageHistory 객체를 생성하여 store에 저장
-        st.session_state["store"][session_ids] = ChatMessageHistory()
-    return st.session_state["store"][session_ids]  # 해당 세션 ID에 대한 세션 기록 반환
-
-  
-
-if user_input := st.chat_input("메시지를 입력해 주세요"):
-    st.chat_message("user").write(f"{user_input}")
-    st.session_state["messages"].append(("user",user_input))
-    
-
-    
-    #AI의 답변
     with st.chat_message("assistant"):
-        stream_handler=StreamHandler(st.empty())
+        stream_handler = StreamHandler(st.empty())
+        llm = ChatOpenAI(streaming=True, callbacks=[stream_handler])
 
-        #1. 모델생성
-        llm = ChatOpenAI(streaming=True,callbacks=[stream_handler])
-        
-        #2. 프롬프트 생성
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                 (
-            "system",
-            """
-            # 작업 설명: 운동화 쇼핑 에이전트
+        # 운동화 추천해줘 라는 특수 요청이면 전용 프롬프트 사용
+        if user_input.strip() == "운동화 추천해줘":
+            user_prompt = "운동화 3개를 추천해 주세요. 브랜드명, 모델명, 기능, 가격을 포함해서 리스트 형식으로 설명해 주세요."
+        else:
+            user_prompt = user_input
 
-## 역할
-당신은 친절하고 감성적인 **운동화 쇼핑 에이전트**입니다.  
----------
--규칙
-1.당신은 사용자를 도와주는 챗봇이기 때문에, "저희 매장에서 추천드리는 운동화~~"와 같은 말은 절대 하지 마세요. 
-2.당신의 주요 목표는 사용자와의 멀티턴 대화를 통해 운동화 착용 시 기대하는 느낌과 감성적 니즈를 정확하게 파악한 후, 가장 적합한 3개의 운동화 제품을 추천하는 것입니다.  
-3.대화는 단계적으로 진행되며, 각 단계에서 사용자 응답을 저장해 다음 단계에서 활용합니다.
-4.매 단계마다 다른 운동화를 추천해야 합니다.
-----------
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", """
+당신은 운동화 쇼핑 에이전트입니다.
+운동 목적, 기능, 착용감, 브랜드에 기반하여 사용자의 질문에 전문적으로 응답하세요.
+추천 형식 규칙 (절대 위반 금지)
+- 텍스트로만 출력 (이미지, 링크 등 금지)
+- 반드시 다음과 같은 형식으로 리스트 3개를 출력하세요:
+             
+`- 1. [브랜드] [제품명] [가격] - [설명]`
+`- 2. ...`
+`- 3. ...`
+             
+- 각 줄은 하이픈(-)과 숫자 순번(1., 2., 3.)으로 시작해야 하며, 줄바꿈된 목록 형태여야 합니다.
+- 각 운동화는 실제 브랜드명, 제품명, 가격과 함께 한 줄 설명을 포함해야 합니다.
+- 설명에는 반드시 사용자가 언급한 기능 또는 조건이 포함되어야 합니다.
+             
+형식 예시 (참고용)
 
-## 대화 흐름 (Workflow)
-대화는 아래 네 단계로 구성되며, 각 단계의 사용자 응답은 변수로 저장됩니다.
+- 1. 나이키 에어줌 페가수스 40 129,000원 - 무게감이 있으며 통풍감이 좋고 쿠션감이 뛰어난 운동화입니다.
+
+위 형식은 절대 변경하지 마세요.
 
 ---
 
-### 🔹 1단계: 운동화 제품 3개 추천과 관련 질문 리스트 제시
-- **트리거 문장**: 사용자가 “추천해줘”, “운동화 보여줘”, “운동화 추천해줘” 등의 말을 하면 시작합니다.
-- 사용자의 입력 이후 "운동화 3개를 추천드립니다." 라고 말한뒤 운동화를 추천하세요,
-- 랜덤으로 3개의 운동화를 추천합니다.
-- ** 추천 형식은 다음을 따르세요**:
- - 1: 브랜드 + 제품명 + 가격 - 한 줄 설명   
- - 2: ...  
- - 3: 
 
--이어서 반드시 감성적 관련 질문 리스트를 제공합니다.
-- ** 질문 리스트 형식은 다음을 따르세요. 질문 3개는 고정이며, 질문 내용을 바꾸지 마세요**:
-"+ 관련 질문 추천  
-1. 기분 전환이 될 만큼 가볍고 자유로운 느낌의 운동화는 어떤 게 있을까요?  
-2. 하루 종일 신어도 안정감을 주는 편안한 운동화가 있을까요?  
-3. 나만의 분위기를 표현할 수 있는 감각적인 스타일의 운동화가 궁금해요."  
+"""),
+            MessagesPlaceholder(variable_name="history"),
+            ("human", "{question}")
+        ])
 
-"원하시는 질문 번호를 선택해주세요(1번, 2번 3번 중 선택)"
----
-
-### 🔹 2단계: 입력 받은 질문과 관련된 운동화 추천과 추가 관련 질문 리스트 제시
-- **트리거 문장**: 사용자가 "1번" 혹은 "2번" 혹은 "3번"을 입력합니다.
-- 운동화 목록 중 3개를 골라 **질문과 감성적으로 연결된** 운동화를 추천합니다
-
-사용자가 "1번" 입력할 경우:  
-"기분 전환, 가볍고 자유로운 느낌의 운동화를 추천드립니다"
-- ** 추천 형식은 다음을 따르세요**:
- - 1: 브랜드 + 제품명 + 가격 - 한 줄 설명  
- - 2: ...  
- - 3: 
-
-사용자가 "2번" 입력할 경우:  
-"오래 신어도 편안하고 안정적인 느낌의 운동화를 추천드립니다"
-- ** 추천 형식은 다음을 따르세요**:
- - 1: 브랜드 + 제품명 + 가격 - 한 줄 설명  
- - 2: ...  
- - 3: 
-
-사용자가 "3번" 입력할 경우:  
-"스타일리시하고 개성 있는 분위기를 표현할 수 있는 운동화를 추천드립니다"
-- ** 추천 형식은 다음을 따르세요**:
- - 1: 브랜드 + 제품명 + 가격 - 한 줄 설명 
- - 2: ...  
- - 3: 
-----
-추가 감성 관련 질문 리스트 제공
-- ** 질문 리스트 형식은 다음을 따르세요. 질문 3개는 고정이며, 질문 내용을 바꾸지 마세요**:
-"+ 관련 질문 추천  
-1. 새 계절에 어울리는 설레는 느낌의 운동화가 있을까요?  
-2. 여행지에서 가볍게 신기 좋은 감각적인 운동화가 궁금해요.  
-3. 일상 속에서 기분 좋게 신을 수 있는 데일리 운동화를 찾고 있어요."  
-
-- **트리거 문장**: 사용자가 "1번" 혹은 "2번" 혹은 "3번"을 입력합니다.
-- 사용자가 입력한 질문의 번호와 관련된 운동화를 추천합니다
-
-사용자가 "1번" 입력할 경우:  
-"계절감과 설렘이 느껴지는 분위기의 운동화를 추천드립니다" 
-- ** 추천 형식은 다음을 따르세요**:
- - 1: 브랜드 + 제품명 + 가격 - 한 줄 설명   
- - 2: ...  
- - 3:  
-
---------
-
-사용자가 "2번" 입력할 경우:  
-"여행지에서 활용하기 좋은 감각적이고 실용적인 운동화를 추천드립니다"  
-- ** 추천 형식은 다음을 따르세요**:
- - 1: 브랜드 + 제품명 + 가격 - 한 줄 설명   
- - 2: ...  
- - 3:  
-
---------
-
-사용자가 "3번" 입력할 경우:  
-"기분 좋게 일상에서 신기 좋은 감성적 데일리 운동화를 추천드립니다"  
-- ** 추천 형식은 다음을 따르세요**:
- - 1: 브랜드 + 제품명 + 가격 - 한 줄 설명   
- - 2: ...  
- - 3:
-
-----
-
-🔹 3단계: 대화 종료  
-"또 다른 추천이 필요하면 말씀해주세요!"
-
-"""
-
-        ),
-                # 대화 기록을 변수로 사용, history 가 MessageHistory 의 key 가 됨
-                MessagesPlaceholder(variable_name="history"),
-                ("human", "{question}"),  # 사용자의 질문을 입력으로 사용
-            ]
-        )
-        chain = prompt | llm  # 프롬프트와 모델을 연결하여 runnable 객체 생성
-    
-        chain_with_memory= RunnableWithMessageHistory(  # RunnableWithMessageHistory 객체 생성
-            chain,  # 실행할 Runnable 객체
-            get_session_history,  # 세션 기록을 가져오는 함수
-            input_messages_key="question",  # 사용자 질문의 키
-            history_messages_key="history",  # 기록 메시지의 키
+        chain = prompt | llm
+        chain_with_memory = RunnableWithMessageHistory(
+            chain,
+            get_session_history,
+            input_messages_key="question",
+            history_messages_key="history"
         )
 
+        response = chain_with_memory.invoke(
+            {"question": user_prompt},
+            config={"configurable": {"session_id": "sneaker-chat"}},
+        )
+        msg = response.content
+        st.session_state["messages"].append(("assistant", msg))
 
-        #response = chain.invoke({"question" : user_input})
-        response=chain_with_memory.invoke(
-        # 수학 관련 질문 "코사인의 의미는 무엇인가요?"를 입력으로 전달합니다.
-        {"question": user_input},
-        # 세션id 설정
-        config={"configurable": {"session_id": "abc123"}},
-)
+        # 후속질문 단계 설정
+        if user_input.strip() == "운동화 추천해줘":
+            st.session_state["followup_step"] = 1
+        elif st.session_state["followup_step"] == 1:
+            st.session_state["followup_step"] = 2
+        elif st.session_state["followup_step"] == 2:
+            st.session_state["followup_step"] = 3
 
-    msg=response.content
-    st.session_state["messages"].append(("assistant",msg))
-
+# ---------------------- 후속질문 출력 ----------------------
+if st.session_state["followup_step"] == 1:
+    st.markdown("### 이런 질문도 해보세요!")
+    for key, question in followup_set_1.items():
+        col_q, col_btn = st.columns([8, 1])
+        col_q.markdown(f"**{key}.** {question}")
+        if col_btn.button("➕", key=f"btn_{key}"):
+            st.session_state["selected_question"] = question
+            st.rerun()
+elif st.session_state["followup_step"] == 2:
+    st.markdown("### 이런 질문도 해보세요!")
+    for key, question in followup_set_2.items():
+        col_q, col_btn = st.columns([8, 1])
+        col_q.markdown(f"**{key}.** {question}")
+        if col_btn.button("➕", key=f"btn_{key}"):
+            st.session_state["selected_question"] = question
+            st.rerun()
+elif st.session_state["followup_step"] == 3:
+    st.markdown("또 다른 추천이 필요하면 말씀해주세요!")
