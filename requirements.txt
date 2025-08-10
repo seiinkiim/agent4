@@ -1,6 +1,7 @@
 streamlit
 pandas
 numpy<2
+langchain-openai
 langchain-core
 langchain-community
 langchain-text-splitters
