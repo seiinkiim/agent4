@@ -9,19 +9,25 @@ from collections import deque
 import pandas as pd
 import streamlit as st
 
-# RAG / LangChain (LLM은 사용하지 않음)
+# RAG / LangChain
 from langchain_community.document_loaders import CSVLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.chat_history import BaseChatMessageHistory
+from langchain_openai import ChatOpenAI  # ⬅️ LLM 사용
 
-
-# --------------------------- Streamlit 기본 ---------------------------
+# --------------------------- App Config ---------------------------
 st.set_page_config(page_title="운동화 쇼핑 에이전트")
 st.title("운동화 쇼핑 에이전트")
 os.environ["OPENAI_API_KEY"] = st.secrets.get("OPENAI_API_KEY", "")
+
+# LLM 설정 (필요시 바꾸세요)
+USE_LLM_DESC = True
+LLM_MODEL = "gpt-4o-mini"
+LLM_TEMPERATURE = 0.4
+LLM_MAX_TOKENS = 160  # 1~2문장
 
 # 세션 상태
 if "messages" not in st.session_state:
@@ -40,7 +46,6 @@ if "random_pool" not in st.session_state:
 SESSION_ID = "sneaker-chat"
 CSV_PATH = "shoes_top12.csv"  # 파일명 맞게 변경 가능
 
-
 # --------------------------- 후속질문(고정 6개) ---------------------------
 followup_set_1 = {
     "Q1": "러닝이나 마라톤에서 더 좋은 기록을 내거나 오래 달릴 수 있도록 도움을 줄 수 있는 신발은 무엇인가요?",
@@ -52,7 +57,6 @@ followup_set_2 = {
     "Q5": "깔끔하고 세련된 스타일의 운동화로 어떤 것이 있나요?",
     "Q6": "신발을 신을 때 ‘와, 이건 정말 내 신발이다! ’라고 느낄 만큼 만족을 주는 운동화가 있을까요?",
 }
-
 
 # --------------------------- 데이터/RAG 준비 ---------------------------
 @st.cache_resource(show_spinner=True)
@@ -70,7 +74,6 @@ if st.session_state["random_pool"] is None:
     st.session_state["random_pool"] = deque(range(len(df_products)))
     random.shuffle(st.session_state["random_pool"])
 
-
 @st.cache_resource(show_spinner=True)
 def build_retriever(csv_path: str):
     loader = CSVLoader(csv_path, encoding="utf-8")
@@ -79,25 +82,21 @@ def build_retriever(csv_path: str):
     splits = splitter.split_documents(docs)
     embedding = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     vs = FAISS.from_documents(splits, embedding=embedding)
-    # 후보 폭을 넉넉히 (CSV 내에서만 검색)
     return vs.as_retriever(search_kwargs={"k": 20})
 
 retriever = build_retriever(CSV_PATH)
 
-
 # --------------------------- 유틸 함수 ---------------------------
 def stream_text(text: str, delay: float = 0.015):
-    """단어 단위 스트리밍 출력 (LLM 아님, 로컬 텍스트용)"""
+    """단어 단위 스트리밍 출력 (LLM 아님, 로컬 텍스트용) — 마크다운 링크 지원"""
     ph = st.empty()
     buf = ""
     for chunk in re.split(r"(\s+)", text):  # 공백 보존
         buf += chunk
-        ph.write(buf)
+        ph.markdown(buf)
         time.sleep(delay)
 
-
 def _norm(s: str) -> str:
-    """공백/기호 제거 + 소문자화로 중복 키 정규화"""
     s = str(s).lower()
     s = re.sub(r"[\s\-\u2013_/\\.,()]+", "", s)
     return s
@@ -105,14 +104,20 @@ def _norm(s: str) -> str:
 def product_key(brand: str, name: str) -> str:
     return f"{_norm(brand)}||{_norm(name)}"
 
+def _md_link(url: str, label: str = "구매링크") -> str:
+    u = str(url).strip()
+    if not u:
+        return ""
+    if not re.match(r"^https?://", u, re.IGNORECASE):
+        u = "http://" + u
+    return f"[{label}]({u})"
 
 def draw_random_products(n: int = 3) -> str:
-    """세션 내 중복 없이 무작위 n개 추출해서 표시하고, seen에 등록 (CSV만)"""
     pool: deque = st.session_state["random_pool"]
     chosen_idx = []
     target = min(n, len(df_products))
     while len(chosen_idx) < target:
-        if not pool:  # 전부 소진하면 다시 섞어서 순환
+        if not pool:
             pool.extend(range(len(df_products)))
             random.shuffle(pool)
         idx = pool.popleft()
@@ -126,21 +131,18 @@ def draw_random_products(n: int = 3) -> str:
     for i, idx in enumerate(chosen_idx, start=1):
         row = df_products.iloc[idx]
         st.session_state["seen_products"].add(product_key(row["브랜드"], row["제품명"]))
+        link_md = _md_link(row["구매링크"], "구매링크")
         lines.append(
-            f"{i}. {row['브랜드']} {row['제품명']} | {row['가격']} | {row['제품설명']} | {row['구매링크']}"
+            f"{i}. {row['브랜드']} {row['제품명']} | {row['가격']} | {row['제품설명']} | {link_md}"
         )
     return "\n".join(lines)
-
 
 def get_session_history(session_id: str) -> BaseChatMessageHistory:
     if session_id not in st.session_state["store"]:
         st.session_state["store"][session_id] = ChatMessageHistory()
     return st.session_state["store"][session_id]
 
-
-def build_query_from_history_and_input(
-    history: BaseChatMessageHistory, user_input: str, max_turns: int = 4
-) -> str:
+def build_query_from_history_and_input(history: BaseChatMessageHistory, user_input: str, max_turns: int = 4) -> str:
     msgs = history.messages[-max_turns * 2 :] if hasattr(history, "messages") else []
     hist_text = []
     for m in msgs:
@@ -151,9 +153,7 @@ def build_query_from_history_and_input(
     hist_blob = "\n".join(hist_text)
     return f"{hist_blob}\nuser: {user_input}\n\n요약 키워드: 운동 목적, 쿠션, 통풍, 경량/안정, 굽 높이, 브랜드 선호"
 
-
 def filter_unseen_docs(docs):
-    """세션에서 이미 본 상품 제거 (CSV 문서만 다룸)"""
     filtered = []
     for d in docs:
         t = d.page_content
@@ -165,18 +165,14 @@ def filter_unseen_docs(docs):
             filtered.append(d)
     return filtered
 
-
 def docs_to_rows(docs):
-    """문서 -> 구조화 dict 리스트 (CSV만, 로컬 중복 제거)"""
     items = []
     local_keys = set()
     for d in docs:
         t = d.page_content
-
         def grab(field):
             m = re.search(rf"{field}\s*[:=]\s*(.+)", t)
             return m.group(1).strip() if m else ""
-
         brand = grab("브랜드")
         name = grab("제품명")
         price = grab("가격")
@@ -184,22 +180,17 @@ def docs_to_rows(docs):
         url = grab("구매링크")
         if not url:
             continue
-
         key = product_key(brand, name)
         if key in local_keys:
             continue
         local_keys.add(key)
-
         items.append({"brand": brand, "name": name, "price": price, "desc": desc, "url": url})
     return items
 
-
 def topup_with_unseen(rows, need: int):
-    """rows가 3개 미만이면 CSV에서 아직 안 본 제품(세션 기준)으로만 채움"""
     if need <= 0:
         return rows
     have_keys = {product_key(r["brand"], r["name"]) for r in rows}
-
     candidates = []
     for _, r in df_products.iterrows():
         key = product_key(r["브랜드"], r["제품명"])
@@ -208,11 +199,9 @@ def topup_with_unseen(rows, need: int):
         candidates.append(
             {"brand": r["브랜드"], "name": r["제품명"], "price": r["가격"], "desc": r["제품설명"], "url": r["구매링크"]}
         )
-
     random.shuffle(candidates)
     rows.extend(candidates[:need])
     return rows
-
 
 # ---------- 키워드 매핑 & 랭킹 ----------
 def get_keywords(user_input: str):
@@ -229,7 +218,7 @@ def get_keywords(user_input: str):
         return ["평평", "플랫", "낮은굽", "로우드롭", "0mm", "4mm", "플랫솔"]
     if "굽" in ui or "드롭" in ui or "높" in ui:
         return ["굽", "드롭", "힐", "높이", "힐투토", "stack"]
-    return []  # 자유 입력이면 키워드 랭킹 생략
+    return []
 
 def keyword_score(text: str, keywords: list[str]) -> int:
     if not keywords:
@@ -242,7 +231,6 @@ def keyword_score(text: str, keywords: list[str]) -> int:
     return score
 
 def rank_by_keywords(df: pd.DataFrame, keywords: list[str], exclude_keys: set[str], top_k: int = 12):
-    """키워드 매칭 점수로 CSV 내 제품을 랭킹 (세션에서 이미 본 제품 제외)"""
     if not keywords:
         return []
     rows = []
@@ -266,19 +254,68 @@ def rank_by_keywords(df: pd.DataFrame, keywords: list[str], exclude_keys: set[st
         r.pop("score", None)
     return rows[:top_k]
 
-
 def rows_to_output(rows):
-    """dict 리스트 -> 최종 출력 문자열"""
+    """dict 리스트 -> 최종 출력 문자열 (링크는 마크다운)"""
     return "\n".join(
-        f"{i}. {r['brand']} {r['name']} | {r['price']} | {r['desc']} | {r['url']}"
+        f"{i}. {r['brand']} {r['name']} | {r['price']} | {r['desc']} | {_md_link(r['url'], '구매링크')}"
         for i, r in enumerate(rows, start=1)
     )
 
+# ---------- 질문 맥락 맞춤 설명 생성 (LLM) ----------
+def _get_llm():
+    try:
+        return ChatOpenAI(model=LLM_MODEL, temperature=LLM_TEMPERATURE, max_tokens=LLM_MAX_TOKENS)
+    except Exception:
+        return None
+
+LLM = _get_llm()
+
+LLM_SYSTEM = (
+    "당신은 러닝화 추천 설명을 작성하는 카피라이터입니다. "
+    "다음 제품 정보와 기본 설명만을 근거로, 사용자 질문의 의도(예: 기록 단축/장거리, 통풍, 안정감 등)와 "
+    "연결되게 한국어로 1~2문장 요약을 만듭니다. "
+    "CSV에 없는 수치나 기능은 추측해 쓰지 마세요. 과장된 표현 대신 명료한 장점만 쓰고, 문장 끝에 마침표를 사용하세요."
+)
+
+def generate_contextual_descriptions(user_question: str, rows: list[dict]) -> list[dict]:
+    """선택된 제품 rows의 desc를 질문 맥락에 맞춰 1~2문장으로 재작성."""
+    if not USE_LLM_DESC or LLM is None or not os.environ.get("OPENAI_API_KEY"):
+        return rows
+
+    new_rows = []
+    for r in rows:
+        try:
+            base_desc = str(r.get("desc", "")).strip()
+            brand = r.get("brand", "")
+            name = r.get("name", "")
+            price = r.get("price", "")
+
+            user_content = (
+                f"[사용자 질문]\n{user_question}\n\n"
+                f"[제품]\n브랜드: {brand}\n제품명: {name}\n가격: {price}\n\n"
+                f"[기본 설명]\n{base_desc}\n\n"
+                f"[작성]\n- 질문에 도움이 되는 포인트를 1~2문장으로 요약하세요.\n"
+                f"- CSV 설명에 있는 정보만 사용하세요.\n"
+                f"- 예: 기록 단축/지속주/통풍/안정감/쿠션/경량 중 해당하는 부분만 연결."
+            )
+
+            resp = LLM.invoke([{"role": "system", "content": LLM_SYSTEM},
+                               {"role": "user", "content": user_content}])
+            text = (getattr(resp, "content", "") or "").strip()
+            if not text:
+                text = base_desc  # 폴백
+            # 과도하게 길면 한 줄로 정리
+            text = re.sub(r"\s+", " ", text)
+            r = {**r, "desc": text}
+        except Exception:
+            # 오류 시 원본 유지
+            pass
+        new_rows.append(r)
+    return new_rows
 
 # --------------------------- 이전 대화 출력 ---------------------------
 for role, msg in st.session_state["messages"]:
     st.chat_message(role).write(msg)
-
 
 # --------------------------- 입력 ---------------------------
 user_input = None
@@ -290,28 +327,26 @@ else:
     if tmp:
         user_input = tmp
 
-
 # --------------------------- 응답 처리 ---------------------------
 if user_input:
     st.chat_message("user").write(user_input)
     st.session_state["messages"].append(("user", user_input))
 
-    # 첫 요청: 무작위 3개 (세션 중복 방지) + 단어 단위 스트리밍 출력
+    # 첫 요청: 무작위 3개 + 스트리밍
     if user_input.strip() == "운동화 추천해줘" and st.session_state["followup_step"] == 0:
         random_reco = draw_random_products(3)
         with st.chat_message("assistant"):
             stream_text(random_reco, delay=0.015)
         st.session_state["messages"].append(("assistant", random_reco))
-        st.session_state["followup_step"] = 1  # 패널 1세트 노출
+        st.session_state["followup_step"] = 1
 
-    # 이후: CSV만 기반 추천 (키워드 랭킹 → 벡터검색 보충 → 미본 보충)
     else:
-        # 0) 키워드 우선 랭킹
+        # 0) 키워드 랭킹
         keywords = get_keywords(user_input)
         exclude = set(st.session_state["seen_products"])
         rows = rank_by_keywords(df_products, keywords, exclude_keys=exclude, top_k=12)[:3]
 
-        # 1) 부족하면 벡터검색(RAG)으로 보충
+        # 1) 벡터검색 보충
         if len(rows) < 3:
             history = get_session_history(SESSION_ID)
             query = build_query_from_history_and_input(history, user_input)
@@ -328,22 +363,25 @@ if user_input:
                     break
             rows.extend(extra)
 
-        # 2) 그래도 부족하면 CSV 미본(unseen)으로 최종 보충
+        # 2) CSV 미본 보충
         if len(rows) < 3:
             rows = topup_with_unseen(rows, 3 - len(rows))
-        rows = rows[:3]  # 안전 가드
+        rows = rows[:3]
 
         # 3) seen 등록
         for r in rows:
             st.session_state["seen_products"].add(product_key(r["brand"], r["name"]))
 
-        # 4) CSV 데이터만으로 최종 출력 + 스트리밍
+        # 4) 질문 맥락 맞춤 설명 생성 (LLM) ▶ desc 대체
+        rows = generate_contextual_descriptions(user_input, rows)
+
+        # 5) 출력
         out_text = rows_to_output(rows)
         with st.chat_message("assistant"):
             stream_text(out_text, delay=0.015)
         st.session_state["messages"].append(("assistant", out_text))
 
-        # 5) 패널 단계 진행(1세트 → 2세트 → 마지막 숨김 + 인증번호 안내)
+        # 6) 패널 단계 진행 및 종료 안내
         if st.session_state["followup_step"] == 1:
             st.session_state["followup_step"] = 2
         elif st.session_state["followup_step"] == 2:
@@ -353,10 +391,8 @@ if user_input:
             st.chat_message("assistant").write(end_msg)
             st.session_state["messages"].append(("assistant", end_msg))
 
-
 # --------------------------- 후속질문 패널 ---------------------------
 def render_followup_panel(step: int):
-    # step 1, 2일 때만 노출 (마지막엔 숨김)
     if step not in (1, 2):
         return
     st.markdown("### 이런 질문도 해보세요!")
