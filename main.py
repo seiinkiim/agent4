@@ -29,6 +29,9 @@ LLM_MODEL = "gpt-4o-mini"
 LLM_TEMPERATURE = 0.4
 LLM_MAX_TOKENS = 160  # 1~2문장
 
+# 매 추천 출력 시 함께 보여줄 안내 문구
+PREFACE = "네 알겠습니다. 귀하의 질문에 맞는 운동화를 추천해드리겠습니다."
+
 # 세션 상태
 if "messages" not in st.session_state:
     st.session_state["messages"] = []
@@ -335,9 +338,10 @@ if user_input:
     # 첫 요청: 무작위 3개 + 스트리밍
     if user_input.strip() == "운동화 추천해줘" and st.session_state["followup_step"] == 0:
         random_reco = draw_random_products(3)
+        combined = f"{PREFACE}\n\n{random_reco}"
         with st.chat_message("assistant"):
-            stream_text(random_reco, delay=0.015)
-        st.session_state["messages"].append(("assistant", random_reco))
+            stream_text(combined, delay=0.015)
+        st.session_state["messages"].append(("assistant", combined))
         st.session_state["followup_step"] = 1
 
     else:
@@ -377,9 +381,10 @@ if user_input:
 
         # 5) 출력
         out_text = rows_to_output(rows)
+        combined = f"{PREFACE}\n\n{out_text}"
         with st.chat_message("assistant"):
-            stream_text(out_text, delay=0.015)
-        st.session_state["messages"].append(("assistant", out_text))
+            stream_text(combined, delay=0.015)
+        st.session_state["messages"].append(("assistant", combined))
 
         # 6) 패널 단계 진행 및 종료 안내
         if st.session_state["followup_step"] == 1:
