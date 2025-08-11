@@ -391,7 +391,7 @@ if user_input:
             st.session_state["followup_step"] = 2
         elif st.session_state["followup_step"] == 2:
             st.session_state["followup_step"] = 3
-            code = f"{random.randint(0, 9999):04d}"
+            code = "8172"  # 🔒 인증번호를 항상 8172로 고정
             end_msg = f"대화가 종료되었습니다. 인증번호는 {code} 입니다"
             st.chat_message("assistant").write(end_msg)
             st.session_state["messages"].append(("assistant", end_msg))
