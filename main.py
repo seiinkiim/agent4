@@ -1,3 +1,4 @@
+
 # app.py
 # --------------------------- Imports ---------------------------
 import os
@@ -332,7 +333,6 @@ if st.session_state["selected_question"]:
 else:
     if FOLLOWUP_ACTIVE:
         _hide_chat_input_css()  # 혹시 남아있는 입력창도 즉시 숨김
-        # 입력창을 아예 호출하지 않음
         user_input = None
     else:
         tmp = st.chat_input("메시지를 입력해 주세요", key="main_input")
@@ -341,13 +341,17 @@ else:
 
 # --------------------------- 응답 처리 ---------------------------
 if user_input:
+    # 사용자 말풍선은 항상 표시 (첫 추천 포함)
     st.chat_message("user").write(user_input)
     st.session_state["messages"].append(("user", user_input))
 
-    # 첫 요청: 무작위 3개 + 스트리밍
-    if user_input.strip() == "운동화 추천해줘" and st.session_state["followup_step"] == 0:
+    # 첫 요청인지 판별
+    is_first_trigger = (user_input.strip() == "운동화 추천해줘" and st.session_state["followup_step"] == 0)
+
+    # 첫 요청: 프리페이스 제거하고 추천만 출력
+    if is_first_trigger:
         random_reco = draw_random_products(3)
-        combined = f"{PREFACE}\n\n{random_reco}"
+        combined = random_reco  # ✅ 프리페이스 제거
         with st.chat_message("assistant"):
             stream_text(combined, delay=0.015)
         st.session_state["messages"].append(("assistant", combined))
@@ -389,7 +393,7 @@ if user_input:
         # 4) LLM 요약 설명
         rows = generate_contextual_descriptions(user_input, rows)
 
-        # 5) 출력
+        # 5) 출력 (이후 턴부터는 프리페이스 포함)
         out_text = rows_to_output(rows)
         combined = f"{PREFACE}\n\n{out_text}"
         with st.chat_message("assistant"):
