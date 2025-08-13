@@ -336,7 +336,7 @@ else:
         _hide_chat_input_css()  # 혹시 남아있는 입력창도 즉시 숨김
         user_input = None
     else:
-        tmp = st.chat_input("메시지를 입력해 주세요", key="main_input")
+        tmp = st.chat_input("'운동화 추천해줘' 를 입력하세요.", key="main_input")
         if tmp:
             user_input = tmp
 
